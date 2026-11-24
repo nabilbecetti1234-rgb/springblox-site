@@ -1,0 +1,52 @@
+name: Update values
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Refresh every game now"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ["springblox.zip", "pipeline/data/support.json"]
+permissions:
+  contents: write
+concurrency:
+  group: update-values
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pillow
+      - name: First run - unpack springblox.zip
+        run: |
+          if [ -f springblox.zip ]; then
+            unzip -o -q springblox.zip && git rm -q --cached springblox.zip && rm springblox.zip
+            echo "FORCE=--force" >> $GITHUB_ENV
+          fi
+      - name: Scrape, validate and rebuild
+        id: upd
+        continue-on-error: true
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then FORCE=--force; fi
+          python pipeline/update.py $FORCE
+      - name: Rebuild page
+        run: python pipeline/build_site_v2.py
+      - name: Commit (Cloudflare Pages publishes it)
+        run: |
+          git config user.name values-bot
+          git config user.email values-bot@users.noreply.github.com
+          git add -A site pipeline README.md
+          git diff --cached --quiet || (git commit -q -m "Update values $(date -u +'%F %H:%M UTC')" && git push)
+      - name: Report failed scrape
+        if: steps.upd.outcome == 'failure'
+        run: |
+          echo "::error::A source failed validation - previous values were kept."
+          exit 1
